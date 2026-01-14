@@ -1,0 +1,25 @@
+{
+  "ec2_user": "ubuntu",
+  "ec2_host": "YOUR_EC2_IP_OR_DOMAIN",
+  "ec2_key_path": "~/path/to/your/key.pem",
+  "app_dir": "/home/ubuntu/your-app-directory",
+  "git_user": "your-github-username",
+  "git_token": "your-github-personal-access-token",
+  "git_repo": "github.com/your-username/your-repo.git",
+  "branch": "main",
+  "install_commands": [
+    "npm install",
+    "pip3 install -r requirements.txt"
+  ],
+  "migration_enabled": false,
+  "migration_commands": [
+    "python3 manage.py migrate",
+    "python3 manage.py collectstatic --noinput",
+    "python3 manage.py createsuperuser --noinput || true"
+  ],
+  "run_commands": [
+    "pkill -f 'your-app-process' || true",
+    "nohup python3 app.py &"
+  ]
+}
+
