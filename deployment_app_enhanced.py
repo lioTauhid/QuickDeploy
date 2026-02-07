@@ -1,11 +1,12 @@
 import json
 import os
 import sys
+import re
 from typing import Dict, List, Optional
 from pathlib import Path
 from paramiko import SSHClient, AutoAddPolicy, SFTPClient
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtGui import QFont, QTextCursor, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QLineEdit, QTextEdit, QPushButton,
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QMenu, QComboBox
 )
 from PyQt6.QtCore import QPoint
+from PyQt6.QtGui import QTextOption
 
 
 class ConfigManager:
@@ -118,6 +120,7 @@ class SSHConnectionManager:
         self.ssh_client: Optional[SSHClient] = None
         self.sftp_client: Optional[SFTPClient] = None
         self.is_connected = False
+        self.shell_channel = None
 
     def connect(self, hostname: str, username: str, key_filename: str, timeout: int = 30):
         """Establish SSH connection"""
@@ -146,13 +149,35 @@ class SSHConnectionManager:
     def disconnect(self):
         """Close SSH connection"""
         try:
+            if self.shell_channel:
+                self.shell_channel.close()
             if self.sftp_client:
                 self.sftp_client.close()
             if self.ssh_client:
                 self.ssh_client.close()
             self.is_connected = False
+            self.shell_channel = None
         except:
             pass
+
+    def get_shell_channel(self):
+        """Get or create interactive shell channel"""
+        if not self.is_connected or not self.ssh_client:
+            return None
+
+        if self.shell_channel is None or self.shell_channel.closed:
+            self.shell_channel = self.ssh_client.invoke_shell(
+                term='dumb',  # Use 'dumb' terminal to avoid ANSI escape codes
+                width=120,
+                height=40
+            )
+            # Disable colored output and special sequences
+            self.shell_channel.send('export TERM=dumb\n')
+            self.shell_channel.send('unset LS_COLORS\n')
+            # Source bash profile and aliases
+            self.shell_channel.send('source ~/.bashrc 2>/dev/null; source ~/.bash_aliases 2>/dev/null\n')
+
+        return self.shell_channel
 
     def execute_command(self, command: str):
         """Execute a single command and return output"""
@@ -168,24 +193,207 @@ class SSHConnectionManager:
             return False, "", str(e)
 
 
+class AnsiEscapeFilter:
+    """Filter to remove ANSI escape sequences and control characters"""
+
+    # ANSI escape sequence pattern
+    ANSI_ESCAPE_PATTERN = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]|\[\?[0-9]+[hl]')
+
+    # Bracketed paste mode sequences
+    BRACKETED_PASTE = re.compile(r'\[\?2004[hl]')
+
+    @staticmethod
+    def strip_ansi(text: str) -> str:
+        """Remove ANSI escape sequences from text"""
+        # Remove ANSI color codes and cursor movements
+        text = AnsiEscapeFilter.ANSI_ESCAPE_PATTERN.sub('', text)
+
+        # Remove bracketed paste mode sequences
+        text = AnsiEscapeFilter.BRACKETED_PASTE.sub('', text)
+
+        # Remove other control sequences
+        text = re.sub(r'\x1b\[[0-9;]*m', '', text)  # Color codes
+        text = re.sub(r'\x1b\[[0-9]*[ABCDEFGJKST]', '', text)  # Cursor movements
+        text = re.sub(r'\x1b\[\?[0-9]+[hl]', '', text)  # Private mode settings
+
+        # Remove carriage returns but keep newlines
+        text = text.replace('\r\n', '\n').replace('\r', '')
+
+        return text
+
+
+class TerminalWidget(QTextEdit):
+    """Custom terminal widget that acts like a real terminal"""
+    command_entered = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setFont(QFont("Courier", 10))
+        self.setStyleSheet("background-color: #1e1e1e; color: #00ff00;")
+        self.command_buffer = ""
+        self.command_history = []
+        self.history_index = -1
+        self.prompt = "$ "
+        self.current_line_start = 0
+
+        # Set word wrap mode
+        self.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+
+    def append_output(self, text: str, color: str = "#ffffff"):
+        """Append output text"""
+        # Strip ANSI escape sequences
+        text = AnsiEscapeFilter.strip_ansi(text)
+
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
+        # Insert text with color
+        escaped_text = text.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        self.insertHtml(f'<span style="color: {color};">{escaped_text}</span>')
+        self.ensureCursorVisible()
+
+        # Update current line start position
+        self.current_line_start = self.textCursor().position()
+
+    def show_prompt(self):
+        """Show command prompt"""
+        self.append_output(self.prompt, "#00ff00")
+        self.current_line_start = self.textCursor().position()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Handle key press events"""
+        cursor = self.textCursor()
+
+        # Prevent editing before the current line start
+        if cursor.position() < self.current_line_start:
+            if event.key() in [Qt.Key.Key_Left, Qt.Key.Key_Backspace, Qt.Key.Key_Up, Qt.Key.Key_Down]:
+                return
+            cursor.setPosition(self.current_line_start)
+            self.setTextCursor(cursor)
+
+        # Handle Enter key
+        if event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
+            # Get the command from current line
+            cursor.setPosition(self.current_line_start)
+            cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+            command = cursor.selectedText().strip()
+
+            # Move to end and add newline
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.setTextCursor(cursor)
+            self.insertPlainText("\n")
+
+            # Save to history
+            if command:
+                self.command_history.append(command)
+                self.history_index = len(self.command_history)
+                self.command_entered.emit(command)
+            else:
+                self.show_prompt()
+
+            return
+
+        # Handle Up arrow - command history
+        elif event.key() == Qt.Key.Key_Up:
+            if self.command_history and self.history_index > 0:
+                self.history_index -= 1
+                self._replace_current_command(self.command_history[self.history_index])
+            return
+
+        # Handle Down arrow - command history
+        elif event.key() == Qt.Key.Key_Down:
+            if self.command_history:
+                if self.history_index < len(self.command_history) - 1:
+                    self.history_index += 1
+                    self._replace_current_command(self.command_history[self.history_index])
+                else:
+                    self.history_index = len(self.command_history)
+                    self._replace_current_command("")
+            return
+
+        # Handle Backspace
+        elif event.key() == Qt.Key.Key_Backspace:
+            if cursor.position() <= self.current_line_start:
+                return
+
+        # Handle Left arrow
+        elif event.key() == Qt.Key.Key_Left:
+            if cursor.position() <= self.current_line_start:
+                return
+
+        # Handle Home key
+        elif event.key() == Qt.Key.Key_Home:
+            cursor.setPosition(self.current_line_start)
+            self.setTextCursor(cursor)
+            return
+
+        # Default behavior for other keys
+        super().keyPressEvent(event)
+
+    def _replace_current_command(self, command: str):
+        """Replace the current command line with new text"""
+        cursor = self.textCursor()
+        cursor.setPosition(self.current_line_start)
+        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertText(command)
+        self.setTextCursor(cursor)
+
+
 class TerminalWorker(QThread):
-    """Worker thread for interactive terminal"""
+    """Worker thread for interactive shell terminal"""
     output_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
+    prompt_signal = pyqtSignal()
 
     def __init__(self, ssh_manager: SSHConnectionManager, command: str):
         super().__init__()
         self.ssh_manager = ssh_manager
         self.command = command
+        self.running = True
 
     def run(self):
-        success, output, error = self.ssh_manager.execute_command(self.command)
-        if success:
-            self.output_signal.emit(output)
-            if error:
-                self.error_signal.emit(error)
-        else:
-            self.error_signal.emit(f"Command failed: {error}")
+        try:
+            channel = self.ssh_manager.get_shell_channel()
+            if not channel:
+                self.error_signal.emit("Not connected to server")
+                self.prompt_signal.emit()
+                return
+
+            # Send command
+            channel.send(self.command + '\n')
+
+            # Read output with timeout
+            output = ""
+            import time
+            start_time = time.time()
+            timeout = 30  # 30 seconds timeout
+
+            while self.running and (time.time() - start_time) < timeout:
+                if channel.recv_ready():
+                    chunk = channel.recv(4096).decode('utf-8', errors='ignore')
+                    if chunk:
+                        output += chunk
+                        # Emit chunks as they arrive for real-time display
+                        self.output_signal.emit(chunk)
+                        start_time = time.time()  # Reset timeout on activity
+                else:
+                    time.sleep(0.1)
+
+                # Check if command completed (simple heuristic)
+                if output.strip().endswith('$') or output.strip().endswith('#'):
+                    break
+
+            self.prompt_signal.emit()
+
+        except Exception as e:
+            self.error_signal.emit(f"Command failed: {str(e)}")
+            self.prompt_signal.emit()
+
+    def stop(self):
+        self.running = False
 
 
 class FileOperationWorker(QThread):
@@ -395,81 +603,82 @@ class DeploymentWorker(QThread):
 
 
 class TerminalTab(QWidget):
-    """Interactive SSH terminal tab"""
+    """Interactive SSH terminal tab with integrated terminal interface"""
 
     def __init__(self, ssh_manager: SSHConnectionManager):
         super().__init__()
         self.ssh_manager = ssh_manager
-        self.current_directory = "~"
-        self.command_history = []
-        self.history_index = -1
+        self.worker = None
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
 
-        # Terminal output
-        self.terminal_output = QTextEdit()
-        self.terminal_output.setReadOnly(True)
-        self.terminal_output.setFont(QFont("Courier", 10))
-        self.terminal_output.setStyleSheet("background-color: #1e1e1e; color: #00ff00;")
-        layout.addWidget(self.terminal_output)
+        # Terminal widget
+        self.terminal = TerminalWidget()
+        self.terminal.command_entered.connect(self.execute_command)
+        layout.addWidget(self.terminal)
 
-        # Command input
-        input_layout = QHBoxLayout()
-        self.prompt_label = QLabel("$ ")
-        self.prompt_label.setFont(QFont("Courier", 10, QFont.Weight.Bold))
-        self.prompt_label.setStyleSheet("color: #00ff00;")
-        input_layout.addWidget(self.prompt_label)
-
-        self.command_input = QLineEdit()
-        self.command_input.setFont(QFont("Courier", 10))
-        self.command_input.setStyleSheet(
-            "background-color: #2e2e2e; color: #00ff00; border: 1px solid #444;"
-        )
-        self.command_input.returnPressed.connect(self.execute_command)
-        input_layout.addWidget(self.command_input)
-
-        execute_btn = QPushButton("Execute")
-        execute_btn.clicked.connect(self.execute_command)
-        input_layout.addWidget(execute_btn)
+        # Control buttons
+        button_layout = QHBoxLayout()
 
         clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self.terminal_output.clear)
-        input_layout.addWidget(clear_btn)
+        clear_btn.clicked.connect(self.clear_terminal)
+        button_layout.addWidget(clear_btn)
 
-        layout.addLayout(input_layout)
+        button_layout.addStretch()
+
+        layout.addLayout(button_layout)
 
         # Welcome message
-        self.append_output("=== SSH Terminal ===", "#00aaff")
-        self.append_output("Connect to server first before executing commands", "#ffaa00")
+        self.terminal.append_output("=== SSH Terminal ===\n", "#00aaff")
+        self.terminal.append_output("Connect to server first before executing commands\n", "#ffaa00")
+        self.terminal.append_output("Type your commands below. Use Up/Down arrows for history.\n\n", "#aaaaaa")
+        self.terminal.show_prompt()
 
-    def execute_command(self):
-        command = self.command_input.text().strip()
-        if not command:
-            return
-
+    def execute_command(self, command: str):
         if not self.ssh_manager.is_connected:
-            self.append_output("Error: Not connected to server", "#ff0000")
+            self.terminal.append_output("Error: Not connected to server\n", "#ff0000")
+            self.terminal.show_prompt()
             return
 
-        self.command_history.append(command)
-        self.history_index = len(self.command_history)
-
-        self.append_output(f"$ {command}", "#00ff00")
-        self.command_input.clear()
+        # Handle special commands
+        if command.lower() in ['clear', 'cls']:
+            self.clear_terminal()
+            return
 
         self.worker = TerminalWorker(self.ssh_manager, command)
-        self.worker.output_signal.connect(lambda out: self.append_output(out, "#ffffff"))
-        self.worker.error_signal.connect(lambda err: self.append_output(err, "#ff0000"))
+        self.worker.output_signal.connect(self.append_output)
+        self.worker.error_signal.connect(self.append_error)
+        self.worker.prompt_signal.connect(self.show_prompt)
         self.worker.start()
 
-    def append_output(self, text: str, color: str = "#00ff00"):
-        cursor = self.terminal_output.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.terminal_output.setTextCursor(cursor)
-        self.terminal_output.insertHtml(f'<span style="color: {color};">{text}</span><br>')
-        self.terminal_output.ensureCursorVisible()
+    def append_output(self, text: str):
+        # Filter out the echoed command and extra prompts
+        lines = text.split('\n')
+        filtered_lines = []
+
+        for line in lines:
+            # Skip lines that are just prompts
+            if line.strip() in ['$', '#', '$ ', '# ']:
+                continue
+            filtered_lines.append(line)
+
+        if filtered_lines:
+            output = '\n'.join(filtered_lines)
+            if output.strip():
+                self.terminal.append_output(output, "#ffffff")
+
+    def append_error(self, text: str):
+        self.terminal.append_output(text + "\n", "#ff0000")
+
+    def show_prompt(self):
+        self.terminal.show_prompt()
+
+    def clear_terminal(self):
+        self.terminal.clear()
+        self.terminal.append_output("=== SSH Terminal ===\n", "#00aaff")
+        self.terminal.show_prompt()
 
 
 class FileBrowserTab(QWidget):
@@ -991,7 +1200,7 @@ class DeploymentApp(QMainWindow):
 
     def _load_config_list(self):
         """Load list of saved configurations into dropdown"""
-        self.config_dropdown.blockSignals(True)  # Prevent triggering selection event
+        self.config_dropdown.blockSignals(True)
 
         current_text = self.config_dropdown.currentText()
         self.config_dropdown.clear()
@@ -1001,7 +1210,6 @@ class DeploymentApp(QMainWindow):
         for config_name in configs:
             self.config_dropdown.addItem(config_name)
 
-        # Restore previous selection if it still exists
         index = self.config_dropdown.findText(current_text)
         if index >= 0:
             self.config_dropdown.setCurrentIndex(index)
@@ -1010,7 +1218,7 @@ class DeploymentApp(QMainWindow):
 
     def _on_config_selected(self, index):
         """Handle configuration selection from dropdown"""
-        if index == 0:  # "-- New Configuration --"
+        if index == 0:
             self.current_config_name = None
             self._clear_form()
             return
@@ -1065,7 +1273,6 @@ class DeploymentApp(QMainWindow):
     def _save_config(self):
         """Save configuration (update existing or prompt for name if new)"""
         if self.current_config_name:
-            # Update existing config
             config = self._get_current_config()
             success, message = self.config_manager.save_config(self.current_config_name, config)
 
@@ -1075,7 +1282,6 @@ class DeploymentApp(QMainWindow):
             else:
                 QMessageBox.critical(self, "Error", message)
         else:
-            # New config - prompt for name
             self._save_config_as()
 
     def _save_config_as(self):
@@ -1094,7 +1300,6 @@ class DeploymentApp(QMainWindow):
                 self.statusBar().showMessage(message)
                 self._load_config_list()
 
-                # Select the newly saved config in dropdown
                 index = self.config_dropdown.findText(config_name)
                 if index >= 0:
                     self.config_dropdown.setCurrentIndex(index)
@@ -1120,7 +1325,7 @@ class DeploymentApp(QMainWindow):
                 self.statusBar().showMessage(message)
                 self.current_config_name = None
                 self._load_config_list()
-                self.config_dropdown.setCurrentIndex(0)  # Select "-- New Configuration --"
+                self.config_dropdown.setCurrentIndex(0)
                 self._clear_form()
             else:
                 QMessageBox.critical(self, "Error", message)
@@ -1159,7 +1364,6 @@ class DeploymentApp(QMainWindow):
             if cmd.strip()
         ]
 
-        # Get git repo and remove https:// if present
         git_repo = self.git_repo_input.text()
         git_repo = git_repo.replace('https://', '').replace('http://', '')
 
@@ -1239,7 +1443,7 @@ def main():
     """Main application entry point"""
     app = QApplication(sys.argv)
     app.setApplicationName("Server Deployment Tool - Enhanced")
-    app.setApplicationVersion("2.1")
+    app.setApplicationVersion("2.3")
     app.setOrganizationName("Deployment Tools")
 
     window = DeploymentApp()
