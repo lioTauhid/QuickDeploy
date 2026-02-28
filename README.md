@@ -38,7 +38,7 @@ pip3 install PyQt6 paramiko
 ### 1. Running the Application
 
 ```bash
-python3 deployment_app.py
+python3 app.py
 ```
 
 **Note**: This application requires a desktop environment with GUI support. If you're running on a server without GUI, you can still use the core deployment logic by importing the `DeploymentWorker` class.

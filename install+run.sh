@@ -19,10 +19,10 @@ else
 fi
 
 # Run app in the background
-if [ -f "deployment_app.py" ]; then
+if [ -f "app.py" ]; then
     echo "Running deployment_app.py in the background..."
-    python deployment_app.py # Run the Python app in the background
+    python app.py # Run the Python app in the background
 else
-    echo "deployment_app.py not found. Exiting."
+    echo "app.py not found. Exiting."
     exit 1
 fi

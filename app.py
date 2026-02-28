@@ -1442,9 +1442,9 @@ class DeploymentApp(QMainWindow):
 def main():
     """Main application entry point"""
     app = QApplication(sys.argv)
-    app.setApplicationName("Server Deployment Tool - Enhanced")
-    app.setApplicationVersion("2.3")
-    app.setOrganizationName("Deployment Tools")
+    app.setApplicationName("QuickDeploy (Remote management, CI-CD)")
+    app.setApplicationVersion("0.8")
+    app.setOrganizationName("lioTauhid")
 
     window = DeploymentApp()
     window.show()
