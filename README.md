@@ -1,49 +1,86 @@
-# Web App Deployment Tool
+# QuickDeploy - Remote Management & CI-CD Tool
 
-A PyQt6 desktop GUI application for automating web app deployment to EC2 servers. This tool allows you to deploy multiple web applications by simply updating JSON configuration files.
+A PyQt6 desktop GUI application for automating web app deployment to remote servers (EC2, VPS, etc.). This tool allows you to deploy multiple web applications, manage remote files, and access an interactive terminal—all from a single interface.
 
 ## Features
 
 - **GUI Interface**: User-friendly PyQt6 interface for easy configuration
 - **JSON Configuration**: Store deployment settings in JSON files for reusability
-- **SSH Deployment**: Secure SSH connection to EC2 instances using key-based authentication
+- **SSH Deployment**: Secure SSH connection to remote instances using key-based authentication
 - **Real-time Logging**: View deployment progress and logs in real-time
 - **Multi-app Support**: Deploy different web apps by switching configuration files
 - **Git Integration**: Automatic git clone/pull operations
 - **Custom Commands**: Configure install, migration, and run commands per application
 - **Migration Control**: Enable/disable migration commands with checkbox
+- **Interactive Terminal**: Full SSH terminal access with command history
+- **File Browser**: Browse, upload, download, and manage remote files
+- **File Editor**: Edit remote files directly with a built-in text editor
+- **File Rename**: Rename files and directories on the remote server
+- **Cross-Platform**: Works on Windows, macOS, and Linux
 
 ## Requirements
 
 - Python 3.7+
 - PyQt6
 - paramiko
-- SSH access to EC2 instance
+- SSH access to remote instance
 - Git repository with your web application
 
 ## Installation
 
-1. Install required Python packages:
+### Prerequisites
+
+Ensure you have Python 3.7 or later installed on your system.
+
+### Step 1: Install Required Python Packages
+
 ```bash
 pip3 install PyQt6 paramiko
 ```
 
-2. Download the application files:
-- `deployment_app.py` - Main application
-- `deployment_config.json` - Example configuration
-- `example_config.json` - Template for new configurations
+Or install from requirements.txt:
+
+```bash
+pip3 install -r requirements.txt
+```
+
+### Step 2: Download Application Files
+
+Download or clone the following files:
+- `app.py` - Main application
+- `requirements.txt` - Python dependencies
+- `example_config.json` - Configuration template
+- `install+run.sh` - Installation script (Linux/macOS)
+- `install+run.bat` - Installation script (Windows)
 
 ## Usage
 
-### 1. Running the Application
+### Running the Application
+
+#### On Linux/macOS:
+
+```bash
+chmod +x install+run.sh
+./install+run.sh
+```
+
+Or directly:
 
 ```bash
 python3 app.py
 ```
 
-**Note**: This application requires a desktop environment with GUI support. If you're running on a server without GUI, you can still use the core deployment logic by importing the `DeploymentWorker` class.
+#### On Windows:
 
-### 2. Configuration
+Double-click `install+run.bat` or run:
+
+```cmd
+python app.py
+```
+
+**Note**: This application requires a desktop environment with GUI support (X11/Wayland on Linux, native on macOS/Windows).
+
+### Configuration
 
 Create or modify a JSON configuration file with your deployment settings:
 
@@ -73,23 +110,46 @@ Create or modify a JSON configuration file with your deployment settings:
 }
 ```
 
-### 3. Deployment Process
+### Deployment Process
 
 1. **Load Configuration**: Click "Load Config" and select your JSON file
 2. **Review Settings**: Verify all fields are correctly populated
-3. **Enable/Disable Migrations**: Check or uncheck the "Enable Migration Commands" checkbox
-4. **Deploy**: Click the "Deploy" button to start deployment
-5. **Monitor Progress**: Watch the real-time log output and progress bar
-6. **Save Configuration**: Save current settings for future use
+3. **Connect to Server**: Click "Connect" to establish SSH connection
+4. **Enable/Disable Migrations**: Check or uncheck the "Enable Migration Commands" checkbox
+5. **Deploy**: Click the "🚀 Deploy" button to start deployment
+6. **Monitor Progress**: Watch the real-time log output and progress bar
+7. **Save Configuration**: Save current settings for future use
+
+### Terminal Usage
+
+1. **Connect to Server**: First, establish an SSH connection using the "Connect" button
+2. **Execute Commands**: Type commands in the terminal and press Enter
+3. **Command History**: Use Up/Down arrow keys to navigate command history
+4. **Clear Terminal**: Click the "Clear" button to clear terminal output
+
+**Supported Commands**: All standard shell commands including:
+- `ls`, `ll`, `cd`, `pwd`, `mkdir`, `rm`, `cp`, `mv`
+- `git`, `npm`, `pip`, `python`, etc.
+
+### File Browser Usage
+
+1. **Connect to Server**: First, establish an SSH connection
+2. **Navigate**: Click on folders to navigate, use "Back" button to go up
+3. **Upload Files**: Click "⬆ Upload" to upload files from your computer
+4. **Download Files**: Right-click on a file and select "📥 Download"
+5. **Edit Files**: Right-click on a file and select "✏️ Edit" to open the file editor
+6. **Rename Files**: Right-click on a file/folder and select "✏️ Rename"
+7. **Delete Files**: Right-click on a file/folder and select "🗑️ Delete"
+8. **Create Folders**: Click "📁 New Folder" to create a new directory
 
 ## Configuration Fields
 
 | Field | Description | Required |
 |-------|-------------|----------|
-| `ec2_user` | EC2 instance username (ubuntu/ec2-user) | Yes |
-| `ec2_host` | EC2 public IP or domain name | Yes |
+| `ec2_user` | Remote instance username (ubuntu/ec2-user/root) | Yes |
+| `ec2_host` | Remote instance public IP or domain name | Yes |
 | `ec2_key_path` | Path to SSH private key file | Yes |
-| `app_dir` | Directory path on EC2 for the application | Yes |
+| `app_dir` | Directory path on remote instance for the application | Yes |
 | `git_user` | GitHub username | Yes |
 | `git_token` | GitHub Personal Access Token | Yes |
 | `git_repo` | Git repository URL | Yes |
@@ -103,7 +163,7 @@ Create or modify a JSON configuration file with your deployment settings:
 
 The application performs the following steps automatically:
 
-1. **SSH Connection**: Connects to EC2 instance using provided credentials
+1. **SSH Connection**: Connects to remote instance using provided credentials
 2. **Git Operations**: 
    - If app directory exists: `git pull` latest changes
    - If not: `git clone` the repository
@@ -111,54 +171,129 @@ The application performs the following steps automatically:
 4. **Migrations** (if enabled): Runs migration commands (e.g., database migrations, static file collection)
 5. **Application Start**: Executes run commands to start/restart the application
 
-## Migration Commands
+## File Editor Features
 
-Migration commands are executed after installation but before starting the application. Common use cases include:
+The built-in file editor allows you to:
+- View file contents
+- Edit remote files directly
+- Save changes back to the server
+- Support for text files (code, config, logs, etc.)
 
-- Database migrations: `python3 manage.py migrate`
+**Supported File Types**: Any text-based file (.py, .js, .json, .yaml, .conf, .log, etc.)
 
-To use migration commands:
-1. Check the "Enable Migration Commands" checkbox
-2. Enter your migration commands (one per line)
-3. Save the configuration for future use
+## Cross-Platform Compatibility
+
+This application has been tested and is compatible with:
+
+- **Windows 10/11**: Use `install+run.bat` or run directly with `python app.py`
+- **macOS**: Use `install+run.sh` or run directly with `python3 app.py`
+- **Linux** (Ubuntu, Debian, CentOS, etc.): Use `install+run.sh` or run directly with `python3 app.py`
+
+### Platform-Specific Notes
+
+**Windows**:
+- Ensure Python is added to PATH
+- Use forward slashes (/) in SSH key paths or use raw strings
+- Git Bash or WSL recommended for better compatibility
+
+**macOS**:
+- May require XQuartz for X11 support (usually not needed)
+- Use `python3` command instead of `python`
+
+**Linux**:
+- Ensure X11 or Wayland is available for GUI
+- May need to install Qt platform plugins: `sudo apt-get install qt6-qpa-plugins`
 
 ## Security Notes
 
-- Store SSH private keys securely
+- Store SSH private keys securely and never commit them to version control
 - Use GitHub Personal Access Tokens instead of passwords
 - Keep configuration files secure (they contain sensitive credentials)
 - Consider using environment variables for sensitive data in production
+- Restrict SSH key file permissions: `chmod 600 ~/.ssh/your-key.pem`
 
 ## Troubleshooting
 
 ### Common Issues
 
 1. **SSH Connection Failed**
-   - Verify EC2 instance is running and accessible
+   - Verify remote instance is running and accessible
    - Check SSH key path and permissions
-   - Ensure security groups allow SSH access
+   - Ensure security groups allow SSH access (port 22)
+   - Verify username matches the instance OS (ubuntu, ec2-user, etc.)
 
 2. **Git Authentication Failed**
    - Verify GitHub username and token
    - Ensure token has repository access permissions
+   - Check if token has expired
 
-3. **Migration Commands Failed**
-   - Check migration commands syntax
-   - Verify database connectivity
-   - Ensure proper permissions for migration operations
+3. **Terminal Commands Not Working**
+   - Ensure shell is properly initialized
+   - Try using full command paths (e.g., `/usr/bin/python3`)
+   - Check if command requires interactive input
 
-4. **Application Won't Start (GUI)**
-   - Requires desktop environment with X11/Wayland
+4. **File Editor Not Opening**
+   - Ensure file is readable on remote server
+   - Check file permissions
+   - Try with a smaller file first
+
+5. **Application Won't Start (GUI)**
+   - Requires desktop environment with X11/Wayland (Linux)
    - Install required Qt platform plugins
+   - Check if DISPLAY variable is set (Linux)
    - For headless servers, use the core logic programmatically
+
+6. **Permission Denied Errors**
+   - Check SSH key permissions: `chmod 600 ~/.ssh/your-key.pem`
+   - Verify user has permissions for the app directory
+   - Use `sudo` in commands if necessary (with caution)
 
 ## File Structure
 
 ```
-deployment-tool/
-├── deployment_app.py              # Main PyQt6 application
-├── example_config.json            # Example Configuration template
-├── requirements.txt               # Python dependencies
-├── install+run.sh                 # Installation script and run
-└── README.md                      # This documentation
+quickdeploy/
+├── app.py                    # Main PyQt6 application
+├── requirements.txt          # Python dependencies
+├── example_config.json       # Example configuration template
+├── install+run.sh           # Installation script (Linux/macOS)
+├── install+run.bat          # Installation script (Windows)
+├── README.md                # This documentation
+└── LICENSE                  # License file
 ```
+
+## Configuration Storage
+
+Configurations are stored in OS-specific directories:
+
+- **Windows**: `C:\Users\<Username>\AppData\Local\DeploymentTool\`
+- **macOS**: `~/Library/Application Support/DeploymentTool/`
+- **Linux**: `~/.config/deployment-tool/`
+
+## Version History
+
+### Version 1.0 (Latest)
+- ✅ Added file editor with popup window
+- ✅ Added rename button to file browser
+- ✅ Fixed terminal bugs (improved shell initialization)
+- ✅ Enhanced cross-platform compatibility
+- ✅ Improved terminal command handling
+- ✅ Added file read/write operations via SFTP
+
+### Version 0.8
+- Initial release with deployment, terminal, and file browser
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+For issues, questions, or feature requests, please contact: liotauhid@gmail.com
+
+## Contributing
+
+Contributions are welcome! Feel free to fork, modify, and submit pull requests.
+
+---
+
+**Made with ❤️ for developers and DevOps engineers**

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QProgressBar, QGroupBox,
     QScrollArea, QSplitter, QCheckBox, QTabWidget, QTreeWidget,
     QTreeWidgetItem, QTableWidget, QTableWidgetItem, QHeaderView,
-    QInputDialog, QMenu, QComboBox
+    QInputDialog, QMenu, QComboBox, QDialog, QSpinBox
 )
 from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import QTextOption
@@ -167,15 +167,20 @@ class SSHConnectionManager:
 
         if self.shell_channel is None or self.shell_channel.closed:
             self.shell_channel = self.ssh_client.invoke_shell(
-                term='dumb',  # Use 'dumb' terminal to avoid ANSI escape codes
+                term='xterm-256color',
                 width=120,
                 height=40
             )
-            # Disable colored output and special sequences
-            self.shell_channel.send('export TERM=dumb\n')
+            # Initialize shell with proper settings
+            self.shell_channel.send('export TERM=xterm-256color\n')
+            self.shell_channel.send('export PS1="$ "\n')
             self.shell_channel.send('unset LS_COLORS\n')
+            self.shell_channel.send('shopt -s expand_aliases 2>/dev/null\n')
             # Source bash profile and aliases
             self.shell_channel.send('source ~/.bashrc 2>/dev/null; source ~/.bash_aliases 2>/dev/null\n')
+            # Small delay to ensure shell is ready
+            import time
+            time.sleep(0.5)
 
         return self.shell_channel
 
@@ -191,6 +196,30 @@ class SSHConnectionManager:
             return True, output, error
         except Exception as e:
             return False, "", str(e)
+
+    def read_file(self, remote_path: str) -> tuple[bool, str, str]:
+        """Read file content via SFTP"""
+        try:
+            if not self.sftp_client:
+                return False, "", "SFTP not available"
+
+            with self.sftp_client.file(remote_path, 'r') as f:
+                content = f.read().decode('utf-8', errors='ignore')
+            return True, content, ""
+        except Exception as e:
+            return False, "", str(e)
+
+    def write_file(self, remote_path: str, content: str) -> tuple[bool, str]:
+        """Write file content via SFTP"""
+        try:
+            if not self.sftp_client:
+                return False, "SFTP not available"
+
+            with self.sftp_client.file(remote_path, 'w') as f:
+                f.write(content.encode('utf-8'))
+            return True, "File saved successfully"
+        except Exception as e:
+            return False, str(e)
 
 
 class AnsiEscapeFilter:
@@ -362,7 +391,7 @@ class TerminalWorker(QThread):
                 self.prompt_signal.emit()
                 return
 
-            # Send command
+            # Send command with proper handling
             channel.send(self.command + '\n')
 
             # Read output with timeout
@@ -382,7 +411,7 @@ class TerminalWorker(QThread):
                 else:
                     time.sleep(0.1)
 
-                # Check if command completed (simple heuristic)
+                # Check if command completed (improved heuristic)
                 if output.strip().endswith('$') or output.strip().endswith('#'):
                     break
 
@@ -421,6 +450,10 @@ class FileOperationWorker(QThread):
                 self._create_directory()
             elif self.operation == "rename":
                 self._rename_file()
+            elif self.operation == "read":
+                self._read_file()
+            elif self.operation == "write":
+                self._write_file()
         except Exception as e:
             self.finished_signal.emit(False, str(e))
 
@@ -490,116 +523,126 @@ class FileOperationWorker(QThread):
         else:
             self.finished_signal.emit(False, error)
 
+    def _read_file(self):
+        remote_path = self.kwargs['remote_path']
+        success, content, error = self.ssh_manager.read_file(remote_path)
+        if success:
+            self.finished_signal.emit(True, content)
+        else:
+            self.finished_signal.emit(False, error)
 
-class DeploymentWorker(QThread):
-    """Worker thread for handling SSH deployment operations"""
-    log_signal = pyqtSignal(str)
-    progress_signal = pyqtSignal(int)
-    finished_signal = pyqtSignal(bool, str)
+    def _write_file(self):
+        remote_path = self.kwargs['remote_path']
+        content = self.kwargs['content']
+        success, message = self.ssh_manager.write_file(remote_path, content)
+        self.finished_signal.emit(success, message)
 
-    def __init__(self, config: Dict):
-        super().__init__()
-        self.config = config
 
-    def run(self):
-        """Execute the deployment process"""
-        try:
-            self.log_signal.emit("🚀 Starting deployment...")
-            self.progress_signal.emit(10)
+class FileEditDialog(QDialog):
+    """Dialog for editing remote files"""
 
-            ssh = SSHClient()
-            ssh.set_missing_host_key_policy(AutoAddPolicy())
+    def __init__(self, parent, ssh_manager: SSHConnectionManager, filename: str, filepath: str):
+        super().__init__(parent)
+        self.ssh_manager = ssh_manager
+        self.filename = filename
+        self.filepath = filepath
+        self.original_content = ""
+        self.worker = None
+        self.init_ui()
+        self.load_file()
 
-            self.log_signal.emit(f"📡 Connecting to {self.config['ec2_host']}...")
-            key_path = os.path.expanduser(self.config['ec2_key_path'])
+    def init_ui(self):
+        """Initialize the dialog UI"""
+        self.setWindowTitle(f"Edit: {self.filename}")
+        self.setGeometry(100, 100, 800, 600)
 
-            if not os.path.exists(key_path):
-                raise Exception(f"SSH key not found: {key_path}")
+        layout = QVBoxLayout(self)
 
-            ssh.connect(
-                hostname=self.config['ec2_host'],
-                username=self.config['ec2_user'],
-                key_filename=key_path,
-                timeout=30
+        # File path label
+        path_label = QLabel(f"File: {self.filepath}")
+        path_label.setStyleSheet("color: #666; font-size: 10px;")
+        layout.addWidget(path_label)
+
+        # Text editor
+        self.text_editor = QTextEdit()
+        self.text_editor.setFont(QFont("Courier", 10))
+        layout.addWidget(self.text_editor)
+
+        # Status label
+        self.status_label = QLabel("Loading file...")
+        layout.addWidget(self.status_label)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        save_btn = QPushButton("💾 Save")
+        save_btn.clicked.connect(self.save_file)
+        button_layout.addWidget(save_btn)
+
+        close_btn = QPushButton("✕ Close")
+        close_btn.clicked.connect(self.close)
+        button_layout.addWidget(close_btn)
+
+        layout.addLayout(button_layout)
+
+    def load_file(self):
+        """Load file content from remote server"""
+        self.text_editor.setEnabled(False)
+        self.status_label.setText("Loading file...")
+
+        self.worker = FileOperationWorker(self.ssh_manager, "read", remote_path=self.filepath)
+        self.worker.finished_signal.connect(self.on_file_loaded)
+        self.worker.start()
+
+    def on_file_loaded(self, success: bool, content: str):
+        """Handle file loaded"""
+        self.text_editor.setEnabled(True)
+
+        if success:
+            self.original_content = content
+            self.text_editor.setPlainText(content)
+            self.status_label.setText(f"File loaded ({len(content)} bytes)")
+        else:
+            self.status_label.setText(f"Error: {content}")
+            QMessageBox.critical(self, "Error", f"Failed to load file: {content}")
+
+    def save_file(self):
+        """Save file content to remote server"""
+        content = self.text_editor.toPlainText()
+
+        if content == self.original_content:
+            self.status_label.setText("No changes to save")
+            return
+
+        reply = QMessageBox.question(
+            self, "Confirm Save",
+            f"Save changes to {self.filename}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.text_editor.setEnabled(False)
+            self.status_label.setText("Saving file...")
+
+            self.worker = FileOperationWorker(
+                self.ssh_manager, "write",
+                remote_path=self.filepath,
+                content=content
             )
+            self.worker.finished_signal.connect(self.on_file_saved)
+            self.worker.start()
 
-            self.progress_signal.emit(30)
-            self.log_signal.emit("✅ Connected successfully!")
+    def on_file_saved(self, success: bool, message: str):
+        """Handle file saved"""
+        self.text_editor.setEnabled(True)
 
-            commands = self._prepare_commands()
-
-            for i, command in enumerate(commands):
-                self.log_signal.emit(f"📋 Executing: {command[:50]}...")
-                stdin, stdout, stderr = ssh.exec_command(command)
-
-                while True:
-                    line = stdout.readline()
-                    if not line:
-                        break
-                    self.log_signal.emit(line.strip())
-
-                error_output = stderr.read().decode()
-                if error_output:
-                    self.log_signal.emit(f"⚠️ Warning: {error_output}")
-
-                progress = 30 + (i + 1) * (60 / len(commands))
-                self.progress_signal.emit(int(progress))
-
-            ssh.close()
-            self.progress_signal.emit(100)
-            self.log_signal.emit("✅ Deployment completed successfully!")
-            self.finished_signal.emit(True, "Deployment completed successfully!")
-
-        except Exception as e:
-            error_msg = f"❌ Deployment failed: {str(e)}"
-            self.log_signal.emit(error_msg)
-            self.finished_signal.emit(False, error_msg)
-
-    def _prepare_commands(self) -> List[str]:
-        """Prepare the list of commands to execute on the remote server"""
-        app_dir = self.config['app_dir']
-        git_user = self.config['git_user']
-        git_token = self.config['git_token']
-        git_repo = self.config['git_repo']
-        branch = self.config['branch']
-
-        # Remove https:// or http:// from git_repo if present
-        git_repo = git_repo.replace('https://', '').replace('http://', '')
-
-        commands = [
-            f"echo '📂 Navigating to app directory...'",
-            f"if [ -d '{app_dir}/.git' ]; then "
-            f"echo 'Pulling latest changes...'; "
-            f"cd {app_dir}; "
-            f"git reset --hard; "
-            f"git pull https://{git_user}:{git_token}@{git_repo} {branch}; "
-            f"else "
-            f"echo 'Fresh clone...'; "
-            f"rm -rf {app_dir}; "
-            f"git clone -b {branch} https://{git_user}:{git_token}@{git_repo} {app_dir}; "
-            f"cd {app_dir}; "
-            f"fi"
-        ]
-
-        if self.config.get('install_commands'):
-            commands.append("echo '📦 Installing dependencies...'")
-            for cmd in self.config['install_commands']:
-                if cmd.strip():
-                    commands.append(f"cd {app_dir} && {cmd}")
-
-        if self.config.get('migration_enabled', False) and self.config.get('migration_commands'):
-            commands.append("echo '🔄 Running migrations...'")
-            for cmd in self.config['migration_commands']:
-                if cmd.strip():
-                    commands.append(f"cd {app_dir} && {cmd}")
-
-        if self.config.get('run_commands'):
-            commands.append("echo '🚀 Starting application...'")
-            for cmd in self.config['run_commands']:
-                if cmd.strip():
-                    commands.append(cmd)
-
-        return commands
+        if success:
+            self.original_content = self.text_editor.toPlainText()
+            self.status_label.setText(f"File saved successfully")
+            QMessageBox.information(self, "Success", "File saved successfully!")
+        else:
+            self.status_label.setText(f"Error: {message}")
+            QMessageBox.critical(self, "Error", f"Failed to save file: {message}")
 
 
 class TerminalTab(QWidget):
@@ -747,9 +790,9 @@ class FileBrowserTab(QWidget):
             self.status_label.setText("Already at root directory")
             return
 
-        # Get parent directory
-        parent_path = os.path.dirname(self.current_path)
-        if not parent_path:
+        # Get parent directory - cross-platform compatible
+        parent_path = str(Path(self.current_path).parent)
+        if not parent_path or parent_path == ".":
             parent_path = "/"
 
         self.path_input.setText(parent_path)
@@ -878,6 +921,30 @@ class FileBrowserTab(QWidget):
             self.worker.finished_signal.connect(self.on_file_operation_finished)
             self.worker.start()
 
+    def edit_file(self, filename: str):
+        """Open file editor dialog"""
+        remote_path = f"{self.current_path}/{filename}".replace('//', '/')
+
+        # Check if it's a file (not a directory)
+        row = None
+        for i in range(self.file_table.rowCount()):
+            if self.file_table.item(i, 0).text() == filename:
+                row = i
+                break
+
+        if row is not None:
+            file_type = self.file_table.item(row, 1).text()
+            if file_type == "Directory":
+                QMessageBox.warning(self, "Error", "Cannot edit a directory")
+                return
+
+        # Open edit dialog
+        dialog = FileEditDialog(self, self.ssh_manager, filename, remote_path)
+        dialog.exec()
+
+        # Refresh file list after editing
+        self.refresh_directory()
+
     def create_directory(self):
         dir_name, ok = QInputDialog.getText(self, "New Directory", "Directory name:")
         if ok and dir_name:
@@ -909,6 +976,9 @@ class FileBrowserTab(QWidget):
             new_path = f"{self.current_path}/{name}".replace('//', '/')
             self.path_input.setText(new_path)
             self.refresh_directory()
+        else:
+            # Open file editor for files
+            self.edit_file(name)
 
     def show_context_menu(self, position: QPoint):
         item = self.file_table.itemAt(position)
@@ -925,6 +995,9 @@ class FileBrowserTab(QWidget):
             download_action = menu.addAction("📥 Download")
             download_action.triggered.connect(lambda: self.download_file(filename))
 
+            edit_action = menu.addAction("✏️ Edit")
+            edit_action.triggered.connect(lambda: self.edit_file(filename))
+
         rename_action = menu.addAction("✏️ Rename")
         rename_action.triggered.connect(lambda: self.rename_file(filename))
 
@@ -932,6 +1005,117 @@ class FileBrowserTab(QWidget):
         delete_action.triggered.connect(lambda: self.delete_file(filename))
 
         menu.exec(self.file_table.viewport().mapToGlobal(position))
+
+
+class DeploymentWorker(QThread):
+    """Worker thread for handling SSH deployment operations"""
+    log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int)
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, config: Dict):
+        super().__init__()
+        self.config = config
+
+    def run(self):
+        """Execute the deployment process"""
+        try:
+            self.log_signal.emit("🚀 Starting deployment...")
+            self.progress_signal.emit(10)
+
+            ssh = SSHClient()
+            ssh.set_missing_host_key_policy(AutoAddPolicy())
+
+            self.log_signal.emit(f"📡 Connecting to {self.config['ec2_host']}...")
+            key_path = os.path.expanduser(self.config['ec2_key_path'])
+
+            if not os.path.exists(key_path):
+                raise Exception(f"SSH key not found: {key_path}")
+
+            ssh.connect(
+                hostname=self.config['ec2_host'],
+                username=self.config['ec2_user'],
+                key_filename=key_path,
+                timeout=30
+            )
+
+            self.progress_signal.emit(30)
+            self.log_signal.emit("✅ Connected successfully!")
+
+            commands = self._prepare_commands()
+
+            for i, command in enumerate(commands):
+                self.log_signal.emit(f"📋 Executing: {command[:50]}...")
+                stdin, stdout, stderr = ssh.exec_command(command)
+
+                while True:
+                    line = stdout.readline()
+                    if not line:
+                        break
+                    self.log_signal.emit(line.strip())
+
+                error_output = stderr.read().decode()
+                if error_output:
+                    self.log_signal.emit(f"⚠️ Warning: {error_output}")
+
+                progress = 30 + (i + 1) * (60 / len(commands))
+                self.progress_signal.emit(int(progress))
+
+            ssh.close()
+            self.progress_signal.emit(100)
+            self.log_signal.emit("✅ Deployment completed successfully!")
+            self.finished_signal.emit(True, "Deployment completed successfully!")
+
+        except Exception as e:
+            error_msg = f"❌ Deployment failed: {str(e)}"
+            self.log_signal.emit(error_msg)
+            self.finished_signal.emit(False, error_msg)
+
+    def _prepare_commands(self) -> List[str]:
+        """Prepare the list of commands to execute on the remote server"""
+        app_dir = self.config['app_dir']
+        git_user = self.config['git_user']
+        git_token = self.config['git_token']
+        git_repo = self.config['git_repo']
+        branch = self.config['branch']
+
+        # Remove https:// or http:// from git_repo if present
+        git_repo = git_repo.replace('https://', '').replace('http://', '')
+
+        commands = [
+            f"echo '📂 Navigating to app directory...'",
+            f"if [ -d '{app_dir}/.git' ]; then "
+            f"echo 'Pulling latest changes...'; "
+            f"cd {app_dir}; "
+            f"git reset --hard; "
+            f"git pull https://{git_user}:{git_token}@{git_repo} {branch}; "
+            f"else "
+            f"echo 'Fresh clone...'; "
+            f"rm -rf {app_dir}; "
+            f"git clone -b {branch} https://{git_user}:{git_token}@{git_repo} {app_dir}; "
+            f"cd {app_dir}; "
+            f"fi"
+        ]
+
+        if self.config.get('install_commands'):
+            commands.append("echo '📦 Installing dependencies...'")
+            for cmd in self.config['install_commands']:
+                if cmd.strip():
+                    commands.append(f"cd {app_dir} && {cmd}")
+
+        if self.config.get('migration_enabled', False) and self.config.get('migration_commands'):
+            commands.append("echo '🔄 Running migrations...'")
+            for cmd in self.config['migration_commands']:
+                if cmd.strip():
+                    commands.append(f"cd {app_dir} && {cmd}")
+
+        if self.config.get('run_commands'):
+            commands.append("echo '🚀 Starting application...'")
+            for cmd in self.config['run_commands']:
+                if cmd.strip():
+                    commands.append(cmd)
+
+        return commands
 
 
 class DeploymentApp(QMainWindow):
@@ -949,7 +1133,7 @@ class DeploymentApp(QMainWindow):
 
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("Server Deployment Tool - Enhanced")
+        self.setWindowTitle("QuickDeploy (Remote management, CI-CD)")
         self.setGeometry(100, 100, 1400, 900)
 
         central_widget = QWidget()
@@ -1443,8 +1627,8 @@ def main():
     """Main application entry point"""
     app = QApplication(sys.argv)
     app.setApplicationName("QuickDeploy (Remote management, CI-CD)")
-    app.setApplicationVersion("0.8")
-    app.setOrganizationName("lioTauhid")
+    app.setApplicationVersion("1.0")
+    app.setOrganizationName("liotauhid@gmail.com")
 
     window = DeploymentApp()
     window.show()

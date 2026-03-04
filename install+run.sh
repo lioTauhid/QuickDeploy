@@ -1,5 +1,25 @@
 #!/bin/bash
 
+# Cross-platform installation and run script for QuickDeploy
+# Works on Linux, macOS, and Windows (Git Bash/WSL)
+
+set -e
+
+echo "================================"
+echo "QuickDeploy - Installation Script"
+echo "================================"
+
+# Detect OS
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+    OS="windows"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    OS="macos"
+else
+    OS="linux"
+fi
+
+echo "Detected OS: $OS"
+
 # Create a virtual environment if it doesn't exist
 if [ ! -d ".venv" ]; then
     echo "Creating virtual environment..."
@@ -8,7 +28,11 @@ fi
 
 # Activate the virtual environment
 echo "Activating virtual environment..."
-source .venv/bin/activate
+if [[ "$OS" == "windows" ]]; then
+    source .venv/Scripts/activate
+else
+    source .venv/bin/activate
+fi
 
 # Install dependencies from requirements.txt if available
 if [ -f "requirements.txt" ]; then
@@ -18,10 +42,10 @@ else
     echo "No requirements.txt found. Skipping dependency installation."
 fi
 
-# Run app in the background
+# Run app
 if [ -f "app.py" ]; then
-    echo "Running deployment_app.py in the background..."
-    python app.py # Run the Python app in the background
+    echo "Starting QuickDeploy application..."
+    python app.py
 else
     echo "app.py not found. Exiting."
     exit 1
