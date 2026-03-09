@@ -2,6 +2,8 @@ import json
 import os
 import sys
 import re
+import subprocess
+import platform
 from typing import Dict, List, Optional
 from pathlib import Path
 from paramiko import SSHClient, AutoAddPolicy, SFTPClient
@@ -222,211 +224,84 @@ class SSHConnectionManager:
             return False, str(e)
 
 
-class AnsiEscapeFilter:
-    """Filter to remove ANSI escape sequences and control characters"""
-
-    # ANSI escape sequence pattern
-    ANSI_ESCAPE_PATTERN = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>]|\[\?[0-9]+[hl]')
-
-    # Bracketed paste mode sequences
-    BRACKETED_PASTE = re.compile(r'\[\?2004[hl]')
+class NativeTerminalLauncher:
+    """Cross-platform native terminal launcher for SSH connections"""
 
     @staticmethod
-    def strip_ansi(text: str) -> str:
-        """Remove ANSI escape sequences from text"""
-        # Remove ANSI color codes and cursor movements
-        text = AnsiEscapeFilter.ANSI_ESCAPE_PATTERN.sub('', text)
+    def open_native_terminal(hostname, username, key_path=None, password=None):
+        system = platform.system()
 
-        # Remove bracketed paste mode sequences
-        text = AnsiEscapeFilter.BRACKETED_PASTE.sub('', text)
-
-        # Remove other control sequences
-        text = re.sub(r'\x1b\[[0-9;]*m', '', text)  # Color codes
-        text = re.sub(r'\x1b\[[0-9]*[ABCDEFGJKST]', '', text)  # Cursor movements
-        text = re.sub(r'\x1b\[\?[0-9]+[hl]', '', text)  # Private mode settings
-
-        # Remove carriage returns but keep newlines
-        text = text.replace('\r\n', '\n').replace('\r', '')
-
-        return text
-
-
-class TerminalWidget(QTextEdit):
-    """Custom terminal widget that acts like a real terminal"""
-    command_entered = pyqtSignal(str)
-
-    def __init__(self):
-        super().__init__()
-        self.setFont(QFont("Courier", 10))
-        self.setStyleSheet("background-color: #1e1e1e; color: #00ff00;")
-        self.command_buffer = ""
-        self.command_history = []
-        self.history_index = -1
-        self.prompt = "$ "
-        self.current_line_start = 0
-
-        # Set word wrap mode
-        self.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
-        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-
-    def append_output(self, text: str, color: str = "#ffffff"):
-        """Append output text"""
-        # Strip ANSI escape sequences
-        text = AnsiEscapeFilter.strip_ansi(text)
-
-        cursor = self.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.setTextCursor(cursor)
-
-        # Insert text with color
-        escaped_text = text.replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-        self.insertHtml(f'<span style="color: {color};">{escaped_text}</span>')
-        self.ensureCursorVisible()
-
-        # Update current line start position
-        self.current_line_start = self.textCursor().position()
-
-    def show_prompt(self):
-        """Show command prompt"""
-        self.append_output(self.prompt, "#00ff00")
-        self.current_line_start = self.textCursor().position()
-
-    def keyPressEvent(self, event: QKeyEvent):
-        """Handle key press events"""
-        cursor = self.textCursor()
-
-        # Prevent editing before the current line start
-        if cursor.position() < self.current_line_start:
-            if event.key() in [Qt.Key.Key_Left, Qt.Key.Key_Backspace, Qt.Key.Key_Up, Qt.Key.Key_Down]:
-                return
-            cursor.setPosition(self.current_line_start)
-            self.setTextCursor(cursor)
-
-        # Handle Enter key
-        if event.key() in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
-            # Get the command from current line
-            cursor.setPosition(self.current_line_start)
-            cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
-            command = cursor.selectedText().strip()
-
-            # Move to end and add newline
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self.setTextCursor(cursor)
-            self.insertPlainText("\n")
-
-            # Save to history
-            if command:
-                self.command_history.append(command)
-                self.history_index = len(self.command_history)
-                self.command_entered.emit(command)
-            else:
-                self.show_prompt()
-
-            return
-
-        # Handle Up arrow - command history
-        elif event.key() == Qt.Key.Key_Up:
-            if self.command_history and self.history_index > 0:
-                self.history_index -= 1
-                self._replace_current_command(self.command_history[self.history_index])
-            return
-
-        # Handle Down arrow - command history
-        elif event.key() == Qt.Key.Key_Down:
-            if self.command_history:
-                if self.history_index < len(self.command_history) - 1:
-                    self.history_index += 1
-                    self._replace_current_command(self.command_history[self.history_index])
-                else:
-                    self.history_index = len(self.command_history)
-                    self._replace_current_command("")
-            return
-
-        # Handle Backspace
-        elif event.key() == Qt.Key.Key_Backspace:
-            if cursor.position() <= self.current_line_start:
-                return
-
-        # Handle Left arrow
-        elif event.key() == Qt.Key.Key_Left:
-            if cursor.position() <= self.current_line_start:
-                return
-
-        # Handle Home key
-        elif event.key() == Qt.Key.Key_Home:
-            cursor.setPosition(self.current_line_start)
-            self.setTextCursor(cursor)
-            return
-
-        # Default behavior for other keys
-        super().keyPressEvent(event)
-
-    def _replace_current_command(self, command: str):
-        """Replace the current command line with new text"""
-        cursor = self.textCursor()
-        cursor.setPosition(self.current_line_start)
-        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
-        cursor.removeSelectedText()
-        cursor.insertText(command)
-        self.setTextCursor(cursor)
-
-
-class TerminalWorker(QThread):
-    """Worker thread for interactive shell terminal"""
-    output_signal = pyqtSignal(str)
-    error_signal = pyqtSignal(str)
-    prompt_signal = pyqtSignal()
-
-    def __init__(self, ssh_manager: SSHConnectionManager, command: str):
-        super().__init__()
-        self.ssh_manager = ssh_manager
-        self.command = command
-        self.running = True
-
-    def run(self):
         try:
-            channel = self.ssh_manager.get_shell_channel()
-            if not channel:
-                self.error_signal.emit("Not connected to server")
-                self.prompt_signal.emit()
-                return
-
-            # Send command with proper handling
-            channel.send(self.command + '\n')
-
-            # Read output with timeout
-            output = ""
-            import time
-            start_time = time.time()
-            timeout = 30  # 30 seconds timeout
-
-            while self.running and (time.time() - start_time) < timeout:
-                if channel.recv_ready():
-                    chunk = channel.recv(4096).decode('utf-8', errors='ignore')
-                    if chunk:
-                        output += chunk
-                        # Emit chunks as they arrive for real-time display
-                        self.output_signal.emit(chunk)
-                        start_time = time.time()  # Reset timeout on activity
-                else:
-                    time.sleep(0.1)
-
-                # Check if command completed (improved heuristic)
-                if output.strip().endswith('$') or output.strip().endswith('#'):
-                    break
-
-            self.prompt_signal.emit()
-
+            if system == "Windows":
+                NativeTerminalLauncher._open_windows_terminal(hostname, username, key_path, password)
+            elif system == "Darwin":  # macOS
+                NativeTerminalLauncher._open_macos_terminal(hostname, username, key_path, password)
+            elif system == "Linux":
+                NativeTerminalLauncher._open_linux_terminal(hostname, username, key_path, password)
+            else:
+                raise Exception(f"Unsupported operating system: {system}")
         except Exception as e:
-            self.error_signal.emit(f"Command failed: {str(e)}")
-            self.prompt_signal.emit()
+            raise Exception(f"Failed to open native terminal: {e}")
 
-    def stop(self):
-        self.running = False
+    @staticmethod
+    def _open_windows_terminal(hostname, username, key_path=None, password=None):
+        ssh_cmd = f'ssh'
+        if key_path:
+            ssh_cmd += f' -i "{key_path}"'
+        ssh_cmd += f' {username}@{hostname}'
+
+        # Open Command Prompt and execute SSH command
+        subprocess.Popen(f'start cmd /k {ssh_cmd}', shell=True)
+
+    @staticmethod
+    def _open_macos_terminal(hostname, username, key_path=None, password=None):
+        ssh_cmd = f'ssh'
+        if key_path:
+            ssh_cmd += f' -i "{key_path}"'
+        ssh_cmd += f' {username}@{hostname}'
+
+        # Use osascript to open Terminal.app and run SSH command
+        applescript = f'''
+        tell application "Terminal"
+            activate
+            do script "{ssh_cmd}"
+        end tell
+        '''
+
+        subprocess.Popen(['osascript', '-e', applescript])
+
+    @staticmethod
+    def _open_linux_terminal(hostname, username, key_path=None, password=None):
+        ssh_cmd = f'ssh'
+        if key_path:
+            ssh_cmd += f' -i "{key_path}"'
+        ssh_cmd += f' {username}@{hostname}'
+
+        # List of common terminal emulators to try
+        terminals = [
+            ['gnome-terminal', '--', 'bash', '-c', f'{ssh_cmd}; exec bash'],
+            ['xterm', '-e', ssh_cmd],
+            ['konsole', '-e', ssh_cmd],
+            ['xfce4-terminal', '-e', ssh_cmd],
+            ['mate-terminal', '-e', ssh_cmd],
+            ['lxterminal', '-e', ssh_cmd],
+            ['tilix', '-e', ssh_cmd],
+            ['terminator', '-e', ssh_cmd],
+        ]
+
+        for terminal_cmd in terminals:
+            try:
+                subprocess.Popen(terminal_cmd)
+                return
+            except FileNotFoundError:
+                continue
+
+        # If no terminal found, raise error
+        raise Exception("No supported terminal emulator found. Please install gnome-terminal, xterm, or konsole.")
 
 
 class FileOperationWorker(QThread):
-    """Worker thread for file operations"""
+    """Worker thread for file operations to keep UI responsive"""
     finished_signal = pyqtSignal(bool, str)
     progress_signal = pyqtSignal(int)
 
@@ -458,7 +333,7 @@ class FileOperationWorker(QThread):
             self.finished_signal.emit(False, str(e))
 
     def _list_directory(self):
-        path = self.kwargs.get('path', '.')
+        path = self.kwargs['path']
         success, output, error = self.ssh_manager.execute_command(f"ls -la {path}")
         if success:
             self.finished_signal.emit(True, output)
@@ -469,34 +344,25 @@ class FileOperationWorker(QThread):
         local_path = self.kwargs['local_path']
         remote_path = self.kwargs['remote_path']
 
-        if not self.ssh_manager.sftp_client:
-            self.finished_signal.emit(False, "SFTP not available")
-            return
+        def progress_callback(transferred, total):
+            if total > 0:
+                progress = int((transferred / total) * 100)
+                self.progress_signal.emit(progress)
 
-        file_size = os.path.getsize(local_path)
-        uploaded = 0
-
-        def callback(transferred, total):
-            progress = int((transferred / total) * 100)
-            self.progress_signal.emit(progress)
-
-        self.ssh_manager.sftp_client.put(local_path, remote_path, callback=callback)
-        self.finished_signal.emit(True, f"Uploaded {local_path} to {remote_path}")
+        self.ssh_manager.sftp_client.put(local_path, remote_path, callback=progress_callback)
+        self.finished_signal.emit(True, f"Uploaded {os.path.basename(local_path)}")
 
     def _download_file(self):
         remote_path = self.kwargs['remote_path']
         local_path = self.kwargs['local_path']
 
-        if not self.ssh_manager.sftp_client:
-            self.finished_signal.emit(False, "SFTP not available")
-            return
+        def progress_callback(transferred, total):
+            if total > 0:
+                progress = int((transferred / total) * 100)
+                self.progress_signal.emit(progress)
 
-        def callback(transferred, total):
-            progress = int((transferred / total) * 100)
-            self.progress_signal.emit(progress)
-
-        self.ssh_manager.sftp_client.get(remote_path, local_path, callback=callback)
-        self.finished_signal.emit(True, f"Downloaded {remote_path} to {local_path}")
+        self.ssh_manager.sftp_client.get(remote_path, local_path, callback=progress_callback)
+        self.finished_signal.emit(True, f"Downloaded {os.path.basename(remote_path)}")
 
     def _delete_file(self):
         remote_path = self.kwargs['remote_path']
@@ -646,82 +512,66 @@ class FileEditDialog(QDialog):
 
 
 class TerminalTab(QWidget):
-    """Interactive SSH terminal tab with integrated terminal interface"""
+    """Terminal tab that launches a native terminal session"""
 
-    def __init__(self, ssh_manager: SSHConnectionManager):
+    def __init__(self, parent_app):
         super().__init__()
-        self.ssh_manager = ssh_manager
-        self.worker = None
+        self.parent_app = parent_app
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+        layout.addStretch()
 
-        # Terminal widget
-        self.terminal = TerminalWidget()
-        self.terminal.command_entered.connect(self.execute_command)
-        layout.addWidget(self.terminal)
+        # Info label
+        info_label = QLabel("Launch a native terminal session for the current server connection.")
+        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_label.setStyleSheet("font-size: 14px; color: #555; margin-bottom: 20px;")
+        layout.addWidget(info_label)
 
-        # Control buttons
-        button_layout = QHBoxLayout()
+        # Launch button
+        self.launch_btn = QPushButton("Access Native Terminal")
+        self.launch_btn.setMinimumHeight(60)
+        self.launch_btn.setMinimumWidth(300)
+        self.launch_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2c3e50;
+                color: white;
+                font-size: 18px;
+                font-weight: bold;
+                border-radius: 10px;
+            }
+            QPushButton:hover {
+                background-color: #34495e;
+            }
+            QPushButton:pressed {
+                background-color: #1a252f;
+            }
+        """)
+        self.launch_btn.clicked.connect(self.launch_terminal)
 
-        clear_btn = QPushButton("Clear")
-        clear_btn.clicked.connect(self.clear_terminal)
-        button_layout.addWidget(clear_btn)
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.launch_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
 
-        button_layout.addStretch()
+        layout.addStretch()
 
-        layout.addLayout(button_layout)
+    def launch_terminal(self):
+        config = self.parent_app._get_current_config()
+        hostname = config.get('ec2_host')
+        username = config.get('ec2_user')
+        key_path = config.get('ec2_key_path')
 
-        # Welcome message
-        self.terminal.append_output("=== SSH Terminal ===\n", "#00aaff")
-        self.terminal.append_output("Connect to server first before executing commands\n", "#ffaa00")
-        self.terminal.append_output("Type your commands below. Use Up/Down arrows for history.\n\n", "#aaaaaa")
-        self.terminal.show_prompt()
-
-    def execute_command(self, command: str):
-        if not self.ssh_manager.is_connected:
-            self.terminal.append_output("Error: Not connected to server\n", "#ff0000")
-            self.terminal.show_prompt()
+        if not hostname or not username:
+            QMessageBox.warning(self, "Missing Info", "Please select or configure a server first.")
             return
 
-        # Handle special commands
-        if command.lower() in ['clear', 'cls']:
-            self.clear_terminal()
-            return
-
-        self.worker = TerminalWorker(self.ssh_manager, command)
-        self.worker.output_signal.connect(self.append_output)
-        self.worker.error_signal.connect(self.append_error)
-        self.worker.prompt_signal.connect(self.show_prompt)
-        self.worker.start()
-
-    def append_output(self, text: str):
-        # Filter out the echoed command and extra prompts
-        lines = text.split('\n')
-        filtered_lines = []
-
-        for line in lines:
-            # Skip lines that are just prompts
-            if line.strip() in ['$', '#', '$ ', '# ']:
-                continue
-            filtered_lines.append(line)
-
-        if filtered_lines:
-            output = '\n'.join(filtered_lines)
-            if output.strip():
-                self.terminal.append_output(output, "#ffffff")
-
-    def append_error(self, text: str):
-        self.terminal.append_output(text + "\n", "#ff0000")
-
-    def show_prompt(self):
-        self.terminal.show_prompt()
-
-    def clear_terminal(self):
-        self.terminal.clear()
-        self.terminal.append_output("=== SSH Terminal ===\n", "#00aaff")
-        self.terminal.show_prompt()
+        try:
+            NativeTerminalLauncher.open_native_terminal(hostname, username, key_path=key_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
 
 
 class FileBrowserTab(QWidget):
@@ -998,7 +848,7 @@ class FileBrowserTab(QWidget):
             edit_action = menu.addAction("✏️ Edit")
             edit_action.triggered.connect(lambda: self.edit_file(filename))
 
-        rename_action = menu.addAction("✏️ Rename")
+        rename_action = menu.addAction("🏷️ Rename")
         rename_action.triggered.connect(lambda: self.rename_file(filename))
 
         delete_action = menu.addAction("🗑️ Delete")
@@ -1152,7 +1002,7 @@ class DeploymentApp(QMainWindow):
         self.tabs.addTab(deployment_tab, "⚙️ Deployment")
 
         # Terminal tab
-        self.terminal_tab = TerminalTab(self.ssh_manager)
+        self.terminal_tab = TerminalTab(self)
         self.tabs.addTab(self.terminal_tab, "💻 Terminal")
 
         # File browser tab
@@ -1253,113 +1103,107 @@ class DeploymentApp(QMainWindow):
 
         layout.addLayout(config_selector_layout)
 
+        # Scroll area for form
         scroll = QScrollArea()
-        form_widget = QWidget()
-        form_layout = QGridLayout(form_widget)
-
-        # EC2 Configuration
-        ec2_group = QGroupBox("EC2 Server Configuration")
-        ec2_layout = QGridLayout(ec2_group)
-
-        self.ec2_user_input = QLineEdit()
-        self.ec2_host_input = QLineEdit()
-        self.ec2_key_input = QLineEdit()
-
-        ec2_layout.addWidget(QLabel("EC2 User:"), 0, 0)
-        ec2_layout.addWidget(self.ec2_user_input, 0, 1)
-        ec2_layout.addWidget(QLabel("EC2 Host:"), 1, 0)
-        ec2_layout.addWidget(self.ec2_host_input, 1, 1)
-        ec2_layout.addWidget(QLabel("SSH Key Path:"), 2, 0)
-
-        key_layout = QHBoxLayout()
-        key_layout.addWidget(self.ec2_key_input)
-        key_browse_btn = QPushButton("Browse")
-        key_browse_btn.clicked.connect(self._browse_ssh_key)
-        key_layout.addWidget(key_browse_btn)
-        ec2_layout.addLayout(key_layout, 2, 1)
-
-        form_layout.addWidget(ec2_group, 0, 0, 1, 2)
-
-        # Git Configuration
-        git_group = QGroupBox("Git Repository Configuration")
-        git_layout = QGridLayout(git_group)
-
-        self.app_dir_input = QLineEdit()
-        self.git_user_input = QLineEdit()
-        self.git_token_input = QLineEdit()
-        self.git_token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.git_repo_input = QLineEdit()
-        self.git_repo_input.setPlaceholderText("github.com/user/repo.git")
-        self.branch_input = QLineEdit()
-
-        git_layout.addWidget(QLabel("App Directory:"), 0, 0)
-        git_layout.addWidget(self.app_dir_input, 0, 1)
-        git_layout.addWidget(QLabel("Git User:"), 1, 0)
-        git_layout.addWidget(self.git_user_input, 1, 1)
-        git_layout.addWidget(QLabel("Git Token:"), 2, 0)
-        git_layout.addWidget(self.git_token_input, 2, 1)
-        git_layout.addWidget(QLabel("Git Repository:"), 3, 0)
-        git_layout.addWidget(self.git_repo_input, 3, 1)
-        git_layout.addWidget(QLabel("Branch:"), 4, 0)
-        git_layout.addWidget(self.branch_input, 4, 1)
-
-        form_layout.addWidget(git_group, 1, 0, 1, 2)
-
-        # Commands Configuration
-        cmd_group = QGroupBox("Commands Configuration")
-        cmd_layout = QVBoxLayout(cmd_group)
-
-        cmd_layout.addWidget(QLabel("Install Commands (one per line):"))
-        self.install_commands_input = QTextEdit()
-        self.install_commands_input.setMaximumHeight(80)
-        cmd_layout.addWidget(self.install_commands_input)
-
-        migration_layout = QVBoxLayout()
-        self.migration_enabled_checkbox = QCheckBox("Enable Migration Commands")
-        self.migration_enabled_checkbox.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        self.migration_enabled_checkbox.stateChanged.connect(self._on_migration_checkbox_changed)
-        migration_layout.addWidget(self.migration_enabled_checkbox)
-
-        migration_label = QLabel("Migration Commands (one per line):")
-        migration_label.setStyleSheet("color: #666;")
-        migration_layout.addWidget(migration_label)
-
-        self.migration_commands_input = QTextEdit()
-        self.migration_commands_input.setMaximumHeight(80)
-        self.migration_commands_input.setEnabled(False)
-        self.migration_commands_input.setPlaceholderText("e.g., python3 manage.py migrate")
-        migration_layout.addWidget(self.migration_commands_input)
-
-        cmd_layout.addLayout(migration_layout)
-
-        cmd_layout.addWidget(QLabel("Run Commands (one per line):"))
-        self.run_commands_input = QTextEdit()
-        self.run_commands_input.setMaximumHeight(80)
-        cmd_layout.addWidget(self.run_commands_input)
-
-        form_layout.addWidget(cmd_group, 2, 0, 1, 2)
-
-        scroll.setWidget(form_widget)
         scroll.setWidgetResizable(True)
+        form_container = QWidget()
+        form_layout = QVBoxLayout(form_container)
+
+        # EC2 Section
+        ec2_group = QGroupBox("EC2 Connection")
+        ec2_layout = QGridLayout()
+
+        self.ec2_host = QLineEdit()
+        self.ec2_user = QLineEdit()
+        self.ec2_key_path = QLineEdit()
+
+        key_browse_btn = QPushButton("Browse")
+        key_browse_btn.clicked.connect(lambda: self._browse_file(self.ec2_key_path))
+
+        ec2_layout.addWidget(QLabel("Host:"), 0, 0)
+        ec2_layout.addWidget(self.ec2_host, 0, 1, 1, 2)
+        ec2_layout.addWidget(QLabel("User:"), 1, 0)
+        ec2_layout.addWidget(self.ec2_user, 1, 1, 1, 2)
+        ec2_layout.addWidget(QLabel("Key Path:"), 2, 0)
+        ec2_layout.addWidget(self.ec2_key_path, 2, 1)
+        ec2_layout.addWidget(key_browse_btn, 2, 2)
+
+        ec2_group.setLayout(ec2_layout)
+        form_layout.addWidget(ec2_group)
+
+        # Git Section
+        git_group = QGroupBox("Git Repository")
+        git_layout = QGridLayout()
+
+        self.git_user = QLineEdit()
+        self.git_token = QLineEdit()
+        self.git_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.git_repo = QLineEdit()
+        self.branch = QLineEdit("main")
+
+        git_layout.addWidget(QLabel("Git User:"), 0, 0)
+        git_layout.addWidget(self.git_user, 0, 1)
+        git_layout.addWidget(QLabel("Git Token:"), 1, 0)
+        git_layout.addWidget(self.git_token, 1, 1)
+        git_layout.addWidget(QLabel("Repo URL:"), 2, 0)
+        git_layout.addWidget(self.git_repo, 2, 1)
+        git_layout.addWidget(QLabel("Branch:"), 3, 0)
+        git_layout.addWidget(self.branch, 3, 1)
+
+        git_group.setLayout(git_layout)
+        form_layout.addWidget(git_group)
+
+        # App Section
+        app_group = QGroupBox("Application Settings")
+        app_layout = QGridLayout()
+
+        self.app_dir = QLineEdit()
+        self.install_cmds = QTextEdit()
+        self.install_cmds.setMaximumHeight(60)
+        self.run_cmds = QTextEdit()
+        self.run_cmds.setMaximumHeight(60)
+
+        app_layout.addWidget(QLabel("App Directory:"), 0, 0)
+        app_layout.addWidget(self.app_dir, 0, 1)
+        app_layout.addWidget(QLabel("Install Commands:"), 1, 0)
+        app_layout.addWidget(self.install_cmds, 1, 1)
+        app_layout.addWidget(QLabel("Run Commands:"), 2, 0)
+        app_layout.addWidget(self.run_cmds, 2, 1)
+
+        app_group.setLayout(app_layout)
+        form_layout.addWidget(app_group)
+
+        # Migration Section
+        mig_group = QGroupBox("Database Migrations")
+        mig_layout = QVBoxLayout()
+
+        self.mig_enabled = QCheckBox("Enable Migrations")
+        self.mig_cmds = QTextEdit()
+        self.mig_cmds.setMaximumHeight(60)
+
+        mig_layout.addWidget(self.mig_enabled)
+        mig_layout.addWidget(QLabel("Migration Commands:"))
+        mig_layout.addWidget(self.mig_cmds)
+
+        mig_group.setLayout(mig_layout)
+        form_layout.addWidget(mig_group)
+
+        scroll.setWidget(form_container)
         layout.addWidget(scroll)
 
-        # Buttons
-        button_layout = QHBoxLayout()
+        # Action Buttons
+        actions_layout = QHBoxLayout()
 
         save_btn = QPushButton("💾 Save Config")
         save_btn.clicked.connect(self._save_config)
-        button_layout.addWidget(save_btn)
+        actions_layout.addWidget(save_btn)
 
-        save_as_btn = QPushButton("💾 Save As...")
-        save_as_btn.clicked.connect(self._save_config_as)
-        button_layout.addWidget(save_as_btn)
+        self.deploy_btn = QPushButton("🚀 Deploy Now")
+        self.deploy_btn.clicked.connect(self.start_deployment)
+        self.deploy_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        actions_layout.addWidget(self.deploy_btn)
 
-        deploy_btn = QPushButton("🚀 Deploy")
-        deploy_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
-        deploy_btn.clicked.connect(self._start_deployment)
-        button_layout.addWidget(deploy_btn)
-
-        layout.addLayout(button_layout)
+        layout.addLayout(actions_layout)
 
         return widget
 
@@ -1368,264 +1212,182 @@ class DeploymentApp(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        title = QLabel("Deployment Log")
-        title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        layout.addWidget(title)
+        layout.addWidget(QLabel("Deployment Log"))
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
-        self.log_output.setFont(QFont("Courier", 10))
+        self.log_output.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: 'Courier New';")
         layout.addWidget(self.log_output)
 
         self.progress_bar = QProgressBar()
         layout.addWidget(self.progress_bar)
 
+        clear_log_btn = QPushButton("Clear Log")
+        clear_log_btn.clicked.connect(lambda: self.log_output.clear())
+        layout.addWidget(clear_log_btn)
+
         return widget
 
-    def _load_config_list(self):
-        """Load list of saved configurations into dropdown"""
-        self.config_dropdown.blockSignals(True)
+    def _browse_file(self, line_edit: QLineEdit):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select File")
+        if file_path:
+            line_edit.setText(file_path)
 
-        current_text = self.config_dropdown.currentText()
+    def _get_current_config(self) -> Dict:
+        """Collect all form data into a dictionary"""
+        return {
+            'ec2_host': self.ec2_host.text(),
+            'ec2_user': self.ec2_user.text(),
+            'ec2_key_path': self.ec2_key_path.text(),
+            'git_user': self.git_user.text(),
+            'git_token': self.git_token.text(),
+            'git_repo': self.git_repo.text(),
+            'branch': self.branch.text(),
+            'app_dir': self.app_dir.text(),
+            'install_commands': self.install_cmds.toPlainText().split('\n'),
+            'run_commands': self.run_cmds.toPlainText().split('\n'),
+            'migration_enabled': self.mig_enabled.isChecked(),
+            'migration_commands': self.mig_cmds.toPlainText().split('\n')
+        }
+
+    def _load_config_list(self):
+        """Refresh the configuration dropdown"""
+        self.config_dropdown.blockSignals(True)
         self.config_dropdown.clear()
         self.config_dropdown.addItem("-- New Configuration --")
 
         configs = self.config_manager.list_configs()
-        for config_name in configs:
-            self.config_dropdown.addItem(config_name)
+        for config in configs:
+            self.config_dropdown.addItem(config)
 
-        index = self.config_dropdown.findText(current_text)
-        if index >= 0:
-            self.config_dropdown.setCurrentIndex(index)
+        if self.current_config_name:
+            index = self.config_dropdown.findText(self.current_config_name)
+            if index >= 0:
+                self.config_dropdown.setCurrentIndex(index)
 
         self.config_dropdown.blockSignals(False)
 
-    def _on_config_selected(self, index):
+    def _on_config_selected(self, index: int):
         """Handle configuration selection from dropdown"""
-        if index == 0:
-            self.current_config_name = None
+        if index <= 0:
             self._clear_form()
+            self.current_config_name = None
             return
 
-        config_name = self.config_dropdown.currentText()
-        success, config, message = self.config_manager.load_config(config_name)
+        name = self.config_dropdown.currentText()
+        success, config, message = self.config_manager.load_config(name)
 
         if success:
-            self._populate_form(config)
-            self.current_config_name = config_name
+            self._fill_form(config)
+            self.current_config_name = name
             self.statusBar().showMessage(message)
         else:
-            QMessageBox.critical(self, "Error", message)
-
-    def _clear_form(self):
-        """Clear all form fields"""
-        self.ec2_user_input.clear()
-        self.ec2_host_input.clear()
-        self.ec2_key_input.clear()
-        self.app_dir_input.clear()
-        self.git_user_input.clear()
-        self.git_token_input.clear()
-        self.git_repo_input.clear()
-        self.branch_input.clear()
-        self.install_commands_input.clear()
-        self.migration_enabled_checkbox.setChecked(False)
-        self.migration_commands_input.clear()
-        self.run_commands_input.clear()
-
-    def _populate_form(self, config: Dict):
-        """Populate form fields with configuration data"""
-        self.ec2_user_input.setText(config.get('ec2_user', ''))
-        self.ec2_host_input.setText(config.get('ec2_host', ''))
-        self.ec2_key_input.setText(config.get('ec2_key_path', ''))
-        self.app_dir_input.setText(config.get('app_dir', ''))
-        self.git_user_input.setText(config.get('git_user', ''))
-        self.git_token_input.setText(config.get('git_token', ''))
-        self.git_repo_input.setText(config.get('git_repo', ''))
-        self.branch_input.setText(config.get('branch', ''))
-
-        install_commands = '\n'.join(config.get('install_commands', []))
-        self.install_commands_input.setPlainText(install_commands)
-
-        migration_enabled = config.get('migration_enabled', False)
-        self.migration_enabled_checkbox.setChecked(migration_enabled)
-        migration_commands = '\n'.join(config.get('migration_commands', []))
-        self.migration_commands_input.setPlainText(migration_commands)
-
-        run_commands = '\n'.join(config.get('run_commands', []))
-        self.run_commands_input.setPlainText(run_commands)
+            QMessageBox.warning(self, "Error", message)
 
     def _save_config(self):
-        """Save configuration (update existing or prompt for name if new)"""
-        if self.current_config_name:
-            config = self._get_current_config()
-            success, message = self.config_manager.save_config(self.current_config_name, config)
+        """Save current form data to a configuration file"""
+        name = self.current_config_name
+        if not name:
+            name, ok = QInputDialog.getText(self, "Save Configuration", "Enter a name for this configuration:")
+            if not ok or not name:
+                return
+            self.current_config_name = name
 
-            if success:
-                self.statusBar().showMessage(message)
-                self._load_config_list()
-            else:
-                QMessageBox.critical(self, "Error", message)
+        config = self._get_current_config()
+        success, message = self.config_manager.save_config(name, config)
+
+        if success:
+            self._load_config_list()
+            self.statusBar().showMessage(message)
         else:
-            self._save_config_as()
-
-    def _save_config_as(self):
-        """Save configuration with a new name"""
-        config_name, ok = QInputDialog.getText(
-            self, "Save Configuration",
-            "Enter configuration name:"
-        )
-
-        if ok and config_name:
-            config = self._get_current_config()
-            success, message = self.config_manager.save_config(config_name, config)
-
-            if success:
-                self.current_config_name = config_name
-                self.statusBar().showMessage(message)
-                self._load_config_list()
-
-                index = self.config_dropdown.findText(config_name)
-                if index >= 0:
-                    self.config_dropdown.setCurrentIndex(index)
-            else:
-                QMessageBox.critical(self, "Error", message)
+            QMessageBox.warning(self, "Error", message)
 
     def _delete_current_config(self):
         """Delete the currently selected configuration"""
         if not self.current_config_name:
-            QMessageBox.information(self, "No Config", "No configuration selected to delete")
             return
 
         reply = QMessageBox.question(
             self, "Confirm Delete",
-            f"Are you sure you want to delete configuration '{self.current_config_name}'?",
+            f"Are you sure you want to delete '{self.current_config_name}'?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             success, message = self.config_manager.delete_config(self.current_config_name)
-
             if success:
-                self.statusBar().showMessage(message)
                 self.current_config_name = None
                 self._load_config_list()
-                self.config_dropdown.setCurrentIndex(0)
                 self._clear_form()
+                self.statusBar().showMessage(message)
             else:
-                QMessageBox.critical(self, "Error", message)
+                QMessageBox.warning(self, "Error", message)
 
-    def _on_migration_checkbox_changed(self, state):
-        """Handle migration checkbox state change"""
-        enabled = state == Qt.CheckState.Checked.value
-        self.migration_commands_input.setEnabled(enabled)
-        if enabled:
-            self.migration_commands_input.setStyleSheet("")
-        else:
-            self.migration_commands_input.setStyleSheet("background-color: #f0f0f0;")
+    def _clear_form(self):
+        """Reset all form fields"""
+        self.ec2_host.clear()
+        self.ec2_user.clear()
+        self.ec2_key_path.clear()
+        self.git_user.clear()
+        self.git_token.clear()
+        self.git_repo.clear()
+        self.branch.setText("main")
+        self.app_dir.clear()
+        self.install_cmds.clear()
+        self.run_cmds.clear()
+        self.mig_enabled.setChecked(False)
+        self.mig_cmds.clear()
 
-    def _browse_ssh_key(self):
-        """Browse for SSH key file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select SSH Key File", os.path.expanduser("~"), "PEM files (*.pem);;All files (*)"
-        )
-        if file_path:
-            self.ec2_key_input.setText(file_path)
+    def _fill_form(self, config: Dict):
+        """Fill form fields with configuration data"""
+        self.ec2_host.setText(config.get('ec2_host', ''))
+        self.ec2_user.setText(config.get('ec2_user', ''))
+        self.ec2_key_path.setText(config.get('ec2_key_path', ''))
+        self.git_user.setText(config.get('git_user', ''))
+        self.git_token.setText(config.get('git_token', ''))
+        self.git_repo.setText(config.get('git_repo', ''))
+        self.branch.setText(config.get('branch', 'main'))
+        self.app_dir.setText(config.get('app_dir', ''))
+        self.install_cmds.setPlainText('\n'.join(config.get('install_commands', [])))
+        self.run_cmds.setPlainText('\n'.join(config.get('run_commands', [])))
+        self.mig_enabled.setChecked(config.get('migration_enabled', False))
+        self.mig_cmds.setPlainText('\n'.join(config.get('migration_commands', [])))
 
-    def _get_current_config(self) -> Dict:
-        """Get current configuration from form fields"""
-        install_commands = [
-            cmd.strip() for cmd in self.install_commands_input.toPlainText().split('\n')
-            if cmd.strip()
-        ]
-
-        migration_commands = [
-            cmd.strip() for cmd in self.migration_commands_input.toPlainText().split('\n')
-            if cmd.strip()
-        ]
-
-        run_commands = [
-            cmd.strip() for cmd in self.run_commands_input.toPlainText().split('\n')
-            if cmd.strip()
-        ]
-
-        git_repo = self.git_repo_input.text()
-        git_repo = git_repo.replace('https://', '').replace('http://', '')
-
-        return {
-            'ec2_user': self.ec2_user_input.text(),
-            'ec2_host': self.ec2_host_input.text(),
-            'ec2_key_path': self.ec2_key_input.text(),
-            'app_dir': self.app_dir_input.text(),
-            'git_user': self.git_user_input.text(),
-            'git_token': self.git_token_input.text(),
-            'git_repo': git_repo,
-            'branch': self.branch_input.text(),
-            'install_commands': install_commands,
-            'migration_enabled': self.migration_enabled_checkbox.isChecked(),
-            'migration_commands': migration_commands,
-            'run_commands': run_commands
-        }
-
-    def _start_deployment(self):
-        """Start the deployment process"""
+    def start_deployment(self):
+        """Start the deployment worker thread"""
         config = self._get_current_config()
-        required_fields = ['ec2_user', 'ec2_host', 'ec2_key_path', 'app_dir', 'git_repo', 'branch']
-        missing_fields = [field for field in required_fields if not config.get(field)]
 
-        if missing_fields:
-            QMessageBox.warning(
-                self, "Missing Configuration",
-                f"Please fill in the following required fields: {', '.join(missing_fields)}"
-            )
+        # Basic validation
+        if not all([config['ec2_host'], config['ec2_user'], config['ec2_key_path']]):
+            QMessageBox.warning(self, "Missing Info", "Please fill in EC2 connection details")
             return
 
-        if config.get('migration_enabled', False) and not config.get('migration_commands'):
-            reply = QMessageBox.question(
-                self, "Migration Commands",
-                "Migration is enabled but no migration commands are specified. Continue anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.No:
-                return
+        if not all([config['git_user'], config['git_token'], config['git_repo']]):
+            QMessageBox.warning(self, "Missing Info", "Please fill in Git repository details")
+            return
 
-        self.log_output.clear()
-        self.progress_bar.setValue(0)
+        self.deploy_btn.setEnabled(False)
+        self.log_output.append("\n" + "=" * 50 + "\n")
 
         self.worker = DeploymentWorker(config)
-        self.worker.log_signal.connect(self._append_log)
+        self.worker.log_signal.connect(self.log_output.append)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
-        self.worker.finished_signal.connect(self._deployment_finished)
+        self.worker.finished_signal.connect(self.on_deployment_finished)
         self.worker.start()
 
-        migration_status = "with migrations" if config.get('migration_enabled', False) else "without migrations"
-        self.statusBar().showMessage(f"Deployment in progress {migration_status}...")
-
-    def _append_log(self, message: str):
-        """Append message to log output"""
-        self.log_output.append(message)
-        cursor = self.log_output.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.log_output.setTextCursor(cursor)
-
-    def _deployment_finished(self, success: bool, message: str):
+    def on_deployment_finished(self, success: bool, message: str):
         """Handle deployment completion"""
+        self.deploy_btn.setEnabled(True)
         if success:
-            self.statusBar().showMessage("Deployment completed successfully!")
             QMessageBox.information(self, "Success", message)
         else:
-            self.statusBar().showMessage("Deployment failed!")
             QMessageBox.critical(self, "Error", message)
-        self.worker = None
-
-    def closeEvent(self, event):
-        """Handle application close"""
-        self.ssh_manager.disconnect()
-        event.accept()
 
 
 def main():
     """Main application entry point"""
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     app.setApplicationName("QuickDeploy (Remote management, CI-CD)")
     app.setApplicationVersion("1.0")
     app.setOrganizationName("liotauhid@gmail.com")
