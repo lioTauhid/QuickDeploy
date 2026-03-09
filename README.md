@@ -49,7 +49,6 @@ pip3 install -r requirements.txt
 Download or clone the following files:
 - `app.py` - Main application
 - `requirements.txt` - Python dependencies
-- `example_config.json` - Configuration template
 - `install+run.sh` - Installation script (Linux/macOS)
 - `install+run.bat` - Installation script (Windows)
 
@@ -254,7 +253,6 @@ This application has been tested and is compatible with:
 quickdeploy/
 ├── app.py                    # Main PyQt6 application
 ├── requirements.txt          # Python dependencies
-├── example_config.json       # Example configuration template
 ├── install+run.sh           # Installation script (Linux/macOS)
 ├── install+run.bat          # Installation script (Windows)
 ├── README.md                # This documentation
