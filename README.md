@@ -269,7 +269,7 @@ Configurations are stored in OS-specific directories:
 
 ## Version History
 
-### Version 1.0 (Latest)
+### Version 0.9 (Latest)
 - ✅ Added file editor with popup window
 - ✅ Added rename button to file browser
 - ✅ Fixed terminal bugs (improved shell initialization)
