@@ -33,18 +33,16 @@ class NativeTerminalLauncher:
 
     @staticmethod
     def _open_macos_terminal(hostname, username, key_path=None, password=None):
-        ssh_cmd = f'ssh'
+        ssh_cmd = "ssh"
         if key_path:
             ssh_cmd += f' -i "{key_path}"'
         ssh_cmd += f' {username}@{hostname}'
 
-        # Use osascript to open Terminal.app and run SSH command
-        applescript = f'''
-        tell application "Terminal"
-            activate
-            do script "{ssh_cmd}"
-        end tell
-        '''
+        # Escape double quotes for AppleScript
+        safe_ssh_cmd = ssh_cmd.replace('"', '\\"')
+
+        # Single‑line AppleScript, no extra newlines
+        applescript = f'tell application "Terminal" to do script "{safe_ssh_cmd}"'
 
         subprocess.Popen(['osascript', '-e', applescript])
 
