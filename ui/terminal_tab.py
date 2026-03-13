@@ -67,5 +67,6 @@ class TerminalTab(QWidget):
 
         try:
             NativeTerminalLauncher.open_native_terminal(hostname, username, key_path=key_path)
+            self.parent_app.showMinimized()
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
