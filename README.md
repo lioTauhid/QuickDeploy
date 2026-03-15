@@ -1,3 +1,7 @@
+<h1 align="center">
+  <a><img src="https://github.com/lioTauhid/QuickDeploy/blob/main/assets/faeture-graphics.png?raw=true" alt="Logo" width="400"></a>
+</h1>
+
 # QuickDeploy - Remote Management & CI-CD Tool
 
 A PyQt6 desktop GUI application for automating web app deployment to remote servers (EC2, VPS, etc.). This tool allows
