@@ -25,6 +25,7 @@ def main():
 
     window = DeploymentApp()
     window.setWindowIcon(QIcon(icon_path))
+    window.setWindowTitle("QuickDeploy (Remote management, CI-CD)")
     window.show()
 
     sys.exit(app.exec())

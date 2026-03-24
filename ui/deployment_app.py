@@ -32,7 +32,6 @@ class DeploymentApp(QMainWindow):
     def init_ui(self):
         """Initialize the user interface"""
         self.setGeometry(100, 100, 1400, 900)
-        self.setWindowTitle("QuickDeploy (Remote management, CI-CD)")
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
