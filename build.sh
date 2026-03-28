@@ -37,7 +37,7 @@ fi
 pip install pyinstaller
 if [ -f "app.py" ]; then
     echo "Starting QuickDeploy application binary..."
-    pyinstaller quickdeploy.spec --clean
+    pyinstaller quickdeploy-mac.spec --clean
 else
     echo "app.py not found. Exiting."
     exit 1
