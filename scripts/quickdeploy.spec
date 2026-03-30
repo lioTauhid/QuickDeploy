@@ -5,12 +5,12 @@ from PyInstaller.building.build_main import Analysis, PYZ, EXE, BUNDLE, COLLECT
 block_cipher = None
 
 a = Analysis(
-    ['app.py'],
+    ['../app.py'],
     pathex=['.'],
     binaries=[],
     datas=[
-        ('assets', 'assets'),     # Bundle entire assets folder
-        ('ui', 'ui'),             # Bundle UI module
+        ('../assets', 'assets'),     # Bundle entire assets folder
+        ('../ui', 'ui'),             # Bundle UI module
     ],
     hiddenimports=['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets'],
     hookspath=[],
@@ -33,7 +33,7 @@ exe = EXE(
     upx=True,
     console=False,          # No terminal window
     windowed=True,
-    icon='assets/logo.ico', # Windows/Linux icon
+    icon='../assets/logo.ico', # Windows icon
     onefile=True,           # Single executable
 )
 

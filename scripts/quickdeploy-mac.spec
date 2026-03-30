@@ -5,12 +5,12 @@ from PyInstaller.building.build_main import Analysis, PYZ, EXE, BUNDLE, COLLECT
 block_cipher = None
 
 a = Analysis(
-    ['app.py'],
+    ['../app.py'],
     pathex=['.'],
     binaries=[],
     datas=[
-        ('assets', 'assets'),
-        ('ui', 'ui'),
+        ('../assets', 'assets'),     # Bundle entire assets folder
+        ('../ui', 'ui'),             # Bundle UI module
     ],
     hiddenimports=['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets'],
     hookspath=[],
@@ -32,7 +32,7 @@ exe = EXE(
     upx=True,
     console=False,
     windowed=True,
-    icon='assets/logo.ico',
+    icon='../assets/logo.ico',
     # onefile=True  ← REMOVED
 )
 
@@ -52,7 +52,7 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,                   # ← Pass coll, not exe
         name='QuickDeploy.app',
-        icon='assets/logo.icns',
+        icon='../assets/logo.icns',
         bundle_identifier='com.liotauhid.quickdeploy',
         info_plist={
             'NSHighResolutionCapable': True,

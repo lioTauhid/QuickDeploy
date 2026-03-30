@@ -10,6 +10,7 @@ else
 fi
 
 echo "Detected OS: $OS"
+cd ..
 
 # Create a virtual environment if it doesn't exist
 if [ ! -d ".venv" ]; then
@@ -37,7 +38,7 @@ fi
 pip install pyinstaller
 if [ -f "app.py" ]; then
     echo "Starting QuickDeploy application binary..."
-    pyinstaller quickdeploy-mac.spec --clean
+    pyinstaller scripts/quickdeploy.spec --clean
 else
     echo "app.py not found. Exiting."
     exit 1
