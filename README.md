@@ -36,22 +36,13 @@ interface.
 
 ### Prerequisites
 
-Ensure you have Python 3.7 or later installed on your system.
-
-### Step 1: How To Use
-
+Ensure you have Python 3.10 or later installed on your system.
 To clone and run this application, you'll need [Git](https://git-scm.com) installed on your computer. \
 From your command line:
 
 ```bash
-# Clone this repository
+# To clone this repository
 git clone https://github.com/lioTauhid/QuickDeploy
-```
-
-### Step 2: Install Required Python Packages
-
-```bash
-pip3 install -r requirements.txt
 ```
 
 ## Usage
@@ -65,19 +56,9 @@ chmod +x install+run.sh
 ./install+run.sh
 ```
 
-Or directly:
-
-```bash
-python3 app.py
-```
-
 #### On Windows:
 
-Double-click `install+run.bat` or run:
-
-```cmd
-python app.py
-```
+Double-click `install+run.bat` to install and run app.
 
 **Note**: This application requires a desktop environment with GUI support (X11/Wayland on Linux, native on
 macOS/Windows).
@@ -125,9 +106,9 @@ A sample JSON configuration file with your deployment settings:
 ### Terminal Usage
 
 1. **Connect to Server**: First, establish an SSH connection using the "Connect" button
-2. **Execute Commands**: Type commands in the terminal and press Enter
-3. **Command History**: Use Up/Down arrow keys to navigate command history
-4. **Clear Terminal**: Click the "Clear" button to clear terminal output
+2. **Open Terminal**: Navigate to terminal tab and click on Access Native Terminal  button
+3. **Execute Commands**: Type commands in the terminal and press Enter
+4. **Command History**: Use Up/Down arrow keys to navigate command history
 
 **Supported Commands**: All standard shell commands including:
 
